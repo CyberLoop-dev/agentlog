@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentlog · agent trace viewer</title>
+<style>
+  :root { --bg:#0b1020; --card:#131a2e; --line:#243050; --text:#e2e8f0; --mute:#8b98b8; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; padding:28px 18px 60px; }
+  h1 { margin:0; font-size:30px; background:linear-gradient(90deg,#f472b6,#8b5cf6); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  p.sub { color:var(--mute); margin:4px 0 20px; }
+  textarea { width:100%; height:130px; background:var(--card); color:var(--text); border:1px dashed var(--line); border-radius:12px; padding:12px; font:13px ui-monospace,Menlo,monospace; resize:vertical; }
+  textarea.drag { border-color:#8b5cf6; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; align-items:center; }
+  button, .chip { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:999px; padding:6px 14px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:#8b5cf6; }
+  .chip.off { opacity:.35; }
+  .chip i { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  input[type=search] { flex:1; min-width:160px; background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:999px; padding:7px 14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-left-width:4px; border-radius:10px; margin:10px 0; overflow:hidden; }
+  .head { display:flex; gap:10px; align-items:center; padding:9px 12px; cursor:pointer; user-select:none; }
+  .idx { color:var(--mute); font:12px ui-monospace,monospace; min-width:28px; }
+  .tag { font-size:11px; text-transform:uppercase; letter-spacing:.06em; font-weight:700; }
+  .title { color:var(--mute); font-size:13px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  pre { margin:0; padding:10px 14px 14px; white-space:pre-wrap; word-break:break-word; font:13px/1.5 ui-monospace,Menlo,monospace; border-top:1px solid var(--line); }
+  .card.closed pre { display:none; }
+  .empty, .err { color:var(--mute); text-align:center; padding:30px 0; }
+  .err { color:#fb7185; padding:8px 0; text-align:left; }
+  mark { background:#8b5cf655; color:inherit; border-radius:3px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>agentlog</h1>
+  <p class="sub">Paste or drop a JSONL agent trace. Everything stays in your browser.</p>
+
+  <textarea id="input" placeholder='{"role":"user","content":"hi"}&#10;{"type":"tool_call","name":"search","input":{"q":"cats"}}'></textarea>
+  <div class="row">
+    <button id="sample">Load sample</button>
+    <button id="expand">Expand all</button>
+    <button id="collapse">Collapse all</button>
+    <input type="search" id="q" placeholder="Search the trace...">
+  </div>
+  <div class="row" id="chips"></div>
+  <div id="errs"></div>
+  <div id="list"><div class="empty">Nothing yet. Paste a trace above or load the sample.</div></div>
+</div>
+
+<script>
+const COLORS = {user:"#38bdf8", assistant:"#a78bfa", system:"#94a3b8", tool_call:"#f59e0b", tool_result:"#34d399", event:"#64748b"};
+const SAMPLE = [
+  {role:"system", content:"You are a helpful research agent."},
+  {role:"user", content:"What is the tallest mountain in Europe?"},
+  {role:"assistant", content:"Let me look that up."},
+  {type:"tool_call", name:"web_search", input:{query:"tallest mountain in Europe"}},
+  {type:"tool_result", name:"web_search", output:"Mount Elbrus (5,642 m) in the Caucasus is commonly cited as Europe's highest peak."},
+  {role:"assistant", content:"Mount Elbrus, at 5,642 m, is usually considered the tallest mountain in Europe."}
+].map(x => JSON.stringify(x)).join("\n");
+
+let records = [], active = new Set(Object.keys(COLORS));
+const $ = id => document.getElementById(id);
+
+function kindOf(r) {
+  const t = r.type, role = r.role;
+  if (t === "tool_call" || t === "tool_use" || r.tool_calls) return "tool_call";
+  if (t === "tool_result" || role === "tool") return "tool_result";
+  if (role in COLORS) return role;
+  return "event";
+}
+function bodyOf(r) {
+  let v = r.content ?? r.text ?? r.message ?? r.input ?? r.arguments ?? r.output ?? r.result ?? r;
+  if (Array.isArray(v)) v = v.map(p => typeof p === "string" ? p : (p.text ?? JSON.stringify(p))).join("\n");
+  return typeof v === "string" ? v : JSON.stringify(v, null, 2);
+}
+function parse(text) {
+  const errs = [], out = [];
+  text = text.trim();
+  if (text.startsWith("[")) {
+    try { return { out: JSON.parse(text), errs }; } catch (e) { /* fall through to JSONL */ }
+  }
+  text.split("\n").forEach((line, i) => {
+    if (!line.trim()) return;
+    try { out.push(JSON.parse(line)); } catch (e) { errs.push("Line " + (i + 1) + " is not valid JSON"); }
+  });
+  return { out, errs };
+}
+
+function renderChips() {
+  const counts = {};
+  records.forEach(r => counts[r.k] = (counts[r.k] || 0) + 1);
+  $("chips").replaceChildren(...Object.keys(counts).map(k => {
+    const c = document.createElement("span");
+    c.className = "chip" + (active.has(k) ? "" : " off");
+    const dot = document.createElement("i"); dot.style.background = COLORS[k];
+    c.append(dot, k + " " + counts[k]);
+    c.onclick = () => { active.has(k) ? active.delete(k) : active.add(k); renderChips(); renderList(); };
+    return c;
+  }));
+}
+
+function highlight(pre, text, q) {
+  pre.textContent = "";
+  if (!q) { pre.textContent = text; return; }
+  const low = text.toLowerCase(); let i = 0, j;
+  while ((j = low.indexOf(q, i)) !== -1) {
+    pre.append(text.slice(i, j));
+    const m = document.createElement("mark"); m.textContent = text.slice(j, j + q.length);
+    pre.append(m); i = j + q.length;
+  }
+  pre.append(text.slice(i));
+}
+
+function renderList() {
+  const q = $("q").value.trim().toLowerCase();
+  const items = records.filter(r => active.has(r.k) && (!q || (r.body + r.title).toLowerCase().includes(q)));
+  if (!items.length) {
+    const d = document.createElement("div"); d.className = "empty";
+    d.textContent = records.length ? "No matches." : "Nothing yet. Paste a trace above or load the sample.";
+    $("list").replaceChildren(d); return;
+  }
+  $("list").replaceChildren(...items.map(r => {
+    const card = document.createElement("div"); card.className = "card"; card.style.borderLeftColor = COLORS[r.k];
+    const head = document.createElement("div"); head.className = "head";
+    const idx = document.createElement("span"); idx.className = "idx"; idx.textContent = "#" + (r.i + 1);
+    const tag = document.createElement("span"); tag.className = "tag"; tag.style.color = COLORS[r.k]; tag.textContent = r.k;
+    const title = document.createElement("span"); title.className = "title"; title.textContent = r.title === r.k ? "" : r.title;
+    head.append(idx, tag, title);
+    head.onclick = () => card.classList.toggle("closed");
+    const pre = document.createElement("pre"); highlight(pre, r.body, q);
+    card.append(head, pre); return card;
+  }));
+}
+
+function load() {
+  const { out, errs } = parse($("input").value);
+  records = out.map((r, i) => {
+    const k = kindOf(r);
+    return { i, k, title: r.name || r.tool || r.tool_name || k, body: bodyOf(r) };
+  });
+  active = new Set(Object.keys(COLORS));
+  $("errs").replaceChildren(...errs.slice(0, 5).map(e => { const d = document.createElement("div"); d.className = "err"; d.textContent = e; return d; }));
+  renderChips(); renderList();
+}
+
+$("input").addEventListener("input", load);
+$("q").addEventListener("input", renderList);
+$("sample").onclick = () => { $("input").value = SAMPLE; load(); };
+$("expand").onclick = () => document.querySelectorAll(".card").forEach(c => c.classList.remove("closed"));
+$("collapse").onclick = () => document.querySelectorAll(".card").forEach(c => c.classList.add("closed"));
+
+const ta = $("input");
+ta.addEventListener("dragover", e => { e.preventDefault(); ta.classList.add("drag"); });
+ta.addEventListener("dragleave", () => ta.classList.remove("drag"));
+ta.addEventListener("drop", e => {
+  e.preventDefault(); ta.classList.remove("drag");
+  const f = e.dataTransfer.files[0];
+  if (f) f.text().then(t => { ta.value = t; load(); });
+});
+</script>
+</body>
+</html>
