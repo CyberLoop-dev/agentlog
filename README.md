@@ -11,7 +11,7 @@
 
 **agentlog** turns a raw JSONL agent trace into a clean, searchable timeline. See every user message, assistant reply, tool call and tool result at a glance, instead of scrolling through walls of JSON.
 
-## Use it
+## 📌 Use it
 
 1. Open `index.html` in your browser (no server, no build).
 2. Paste your trace, or drag a `.jsonl` file onto the box.
@@ -19,7 +19,7 @@
 
 Nothing is uploaded. Your traces never leave your machine.
 
-## Input format
+## 📌 Input format
 
 One JSON object per line. agentlog is forgiving and detects the type automatically:
 
@@ -39,7 +39,7 @@ One JSON object per line. agentlog is forgiving and detects the type automatical
 
 The body is taken from the first of `content`, `text`, `message`, `input`, `arguments`, `output`, `result`. A plain JSON array of records works too.
 
-## Features
+## ✨ Features
 
 - Color-coded timeline with per-type filter chips and counts
 - Full-text search with highlighted matches
@@ -47,6 +47,6 @@ The body is taken from the first of `content`, `text`, `message`, `input`, `argu
 - Drag and drop files
 - Invalid lines are reported, not fatal
 
-## License
+## 📄 License
 
 MIT
